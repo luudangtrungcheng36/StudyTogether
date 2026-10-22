@@ -81,6 +81,13 @@
 			<artifactId>spring-boot-starter-webmvc-test</artifactId>
 			<scope>test</scope>
 		</dependency>
+
+		<dependency>
+			<groupId>net.dv8tion</groupId>
+			<artifactId>JDA</artifactId>
+			<version>6.7.0</version>
+		</dependency>
+
 	</dependencies>
 
 	<build>
