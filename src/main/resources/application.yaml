@@ -7,8 +7,16 @@ spring:
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
 
-    flyway:
-      enabled: true
+  flyway:
+    enabled: false
+
+  jpa:
+    hibernate:
+      ddl-auto: none
+
+  sql:
+    init:
+      mode: never
 
 server:
   port: 8080

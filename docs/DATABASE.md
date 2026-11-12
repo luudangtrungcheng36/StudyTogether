@@ -1,6 +1,6 @@
 # Study Together — Database Design
 
-Status: proposed design for the initial implementation. This document describes a target schema, not an implemented database. Business rules come from the project workbook and agreed discussion. PostgreSQL, UUID internal IDs, the five core tables, and the optional authentication tables below form the design proposal.
+Status: docs/sql/schema.sql is the unfinished main SQL draft (clarified 2026-10-31). SQL owns schema definition and entities only map data, but Flyway is disabled, application Hibernate uses none, and automatic SQL initialization is off. No V1 is finalized. Earlier candidate migration/ORM checks on isolated PostgreSQL 18.6 are historical evidence, not completion or baseline approval. The user's database/full application runtime remain unverified; CHECK constraints stay deferred.
 
 Planning update, 2026-10-22: sections 1–10 retain the Discord core baseline. Section 11 records extension dependencies and provisional defaults from the new [API draft](./API_SPEC.md); it does not claim the extensions or migrations exist.
 
@@ -8,7 +8,7 @@ Planning update, 2026-10-22: sections 1–10 retain the Discord core baseline. S
 
 Initial scope: Discord identities and login, tracked Discord rooms, study history, profile statistics, and leaderboards. The bot runs inside the Java backend. Discord OAuth2 identifies the user; the backend issues its own JWT access token.
 
-Keep future Google login, local credentials, web study, achievements, rewards, habits, chat, and games as extensions. Their business rules are still open; do not create their tables solely from this list.
+Confirmed product requirements (2026-10-30, Planned): multiple website login methods, timed web study without requiring Discord, and linking Discord to an existing account created through another method. The current five-table implementation remains Discord-only. Provider selection (Google/local are candidate drafts), credential storage, linking conflicts, and web timing/source-coordination details still need feature-level design; see section 11. Achievements, rewards, habits, chat, and games remain future extensions. Do not create tables solely from these lists.
 
 ## 2. Relationships
 
@@ -34,7 +34,8 @@ An identity and a room are required for a Discord session. Nullable foreign keys
 - `ended_at = NULL` means ongoing. Avoid a second session status field that can disagree with it.
 - `created_at` and `updated_at` are technical audit timestamps. The application must update `updated_at`; a SQL default runs only on insertion.
 - Foreign keys use `ON DELETE RESTRICT` to protect dependent history. Disable accounts and room tracking through explicit workflows. Data erasure/anonymization requires a separate policy.
-- Use versioned migrations. Any schema change remains reviewable; do not use automatic schema recreation against retained data.
+- Handwritten CHECK constraints are deferred at the user's request. Intended validation below is not database CHECK enforcement; the implemented normal service transitions are identified separately. Keep PKs, required columns, uniqueness, FKs, and indexes; revisit individual checks only when their feature is selected and the user agrees.
+- Follow clarified [ADR-003](./decisions/003-schema-baseline-workflow.md): finish docs/sql/schema.sql first, with Flyway disabled and application Hibernate none. Create/enable V1 and Hibernate validate only after the user explicitly finalizes the main SQL. Never generate schemas from entities, rewrite applied migrations, auto-baseline, or recreate retained data.
 
 ## 4. Core Tables
 
@@ -62,9 +63,13 @@ No required email or password. A Discord member can accumulate study history bef
 | `provider_avatar_url` | `TEXT`, nullable | Cached provider avatar. |
 | `last_authenticated_at` | `TIMESTAMPTZ`, nullable | Last verified login through this provider; bot observation alone does not set it. |
 
-Constraints: unique `(provider, provider_subject)`; unique `(user_id, id)` supports the session ownership foreign key. The latter also indexes identities by user.
+Constraints: primary key `id`, required user foreign key, and unique `(provider, provider_subject)`. The additional unique `(user_id, id)` and explicit Discord-only provider check were removed on 2026-10-31. The Java IdentityProvider enum still contains only DISCORD; removing the explicit SQL check does not implement another login provider.
 
-Bot observation and OAuth login both resolve the same provider/subject pair. If two requests race to create it, roll back the losing transaction and reread the existing identity. Create the user and identity together so a failed identity insert does not leave an unused user. Never merge accounts automatically by name or email. Linking another identity requires proof of control and an agreed conflict policy.
+Bot observation and OAuth login both resolve the same provider/subject pair. Create the user and identity together so a failed identity insert does not leave an unused user. Automatic recovery when two requests race to create the same identity is deferred until after the demo; the SQL unique key still prevents duplicate identities, but a losing concurrent request may fail. See [deferred improvements](./DEFERRED-IMPROVEMENTS.md). Never merge accounts automatically by name or email. Linking another identity requires proof of control and an agreed conflict policy.
+
+Implemented 2026-10-31, simplified for the demo: UserIdentityService/UserIdentityServiceImpl provides findOrCreateDiscordIdentity using ordinary service-level Transactional and RequiredArgsConstructor. It reuses an existing identity or creates its user and identity atomically; failures propagate and roll back the transaction without automatic retry/reread. The transaction joins an existing caller transaction when present. The returned identity includes its owner. Existing profile and authentication timestamps are preserved. Since 2026-11-02, the bot listener calls it through StudySessionService; OAuth integration remains planned. Three identity service tests and listener persistence cases verify creation/reuse/rollback on isolated PostgreSQL; live Discord remains unverified and the SQL remains Draft.
+
+Confirmed flow, 2026-10-30 (Planned): Discord study followed by website login using the same Discord account resolves the existing user/identity and history, with no separate link or duplicate user. Explicit Discord linking is for a user signed in by another method whose current account does not yet own that Discord identity. WEB study is available to either account flow. The existing draft conflict policy still applies when the Discord identity belongs to a different internal user; merging remains unresolved.
 
 The schema allows multiple identities per user. Whether multiple accounts from the same provider may be linked is a service policy to decide when linking is implemented.
 
@@ -86,24 +91,23 @@ This table models Discord tracking configuration. If future website rooms need m
 | Column | Type | Meaning |
 |---|---|---|
 | `user_id` | `UUID`, FK | Internal owner of this history. |
-| `source` | `VARCHAR(32)` | Initially `DISCORD`; future sources require new service rules. |
+| `source` | `VARCHAR(32)`, required, no default | Set explicitly when creating a session. Java currently supports `DISCORD`; future sources require new service rules. |
 | `identity_id` | `UUID`, nullable FK | Identity used by the source; required for Discord. |
 | `study_room_id` | `UUID`, nullable FK | Tracked room; required for Discord. |
 | `started_at` | `TIMESTAMPTZ` | Backend observation of entry/start. |
 | `ended_at` | `TIMESTAMPTZ`, nullable | Observed end, or an explicitly chosen recovery boundary. |
-| `last_observed_at` | `TIMESTAMPTZ` | Latest persisted presence observation/checkpoint. |
-| `end_reason` | `VARCHAR(40)`, nullable | Proposed codes: `LEFT_ROOM`, `MOVED_ROOM`, `ROOM_DISABLED`, `RECOVERY_UNCERTAIN`; exact recovery/toggle behavior is pending. |
+| `last_observed_at` | `TIMESTAMPTZ` | Persisted event-derived state checkpoint; a periodic write would not be a fresh Discord acknowledgement about the user. Initialized at session start; periodic/recovery code remains unimplemented. |
+| `end_reason` | `VARCHAR(40)`, nullable | Service uses `LEFT_ROOM` and `MOVED_ROOM`. `ROOM_DISABLED` and `RECOVERY_UNCERTAIN` remain proposed; recovery/toggle behavior is pending. |
 | `needs_review` | `BOOLEAN` | Marks uncertain history for an explicit reconciliation policy. |
 
-Database rules:
+Definitions in the draft SQL (the development database has not been checked):
 
 - One open Discord session per internal user, enforced by a partial unique index.
-- Discord sessions require both an identity and a tracked room.
-- Composite FK `(user_id, identity_id)` prevents recording someone else's identity on a session.
-- End cannot precede start; checkpoint cannot precede start or exceed a known end.
-- An open session has no end reason; a finished session has one.
+- Separate FKs `user_id → users.id` and `identity_id → user_identities.id` require referenced rows to exist. They do not enforce that the identity belongs to the session's user; that is a service responsibility.
 
-Service rules: identity provider must match `source`, room must be enabled at start, bot accounts are excluded, and historical Discord intervals must not overlap for a user. Optional `hardening.sql` also enforces historical non-overlap in PostgreSQL.
+Normal StudySessionService transitions now assign both Discord references, initialize the checkpoint, ignore observations older than the matched session checkpoint, and close with a reason and matching checkpoint/end. Handwritten database CHECKs remain deferred; broader replay/historical validation is unimplemented. Java StudySource still only contains DISCORD; this does not implement WEB study.
+
+StudySessionService resolves ownership from the Discord identity, explicitly assigns DISCORD, checks enabled rooms, and rejects a new start when its user already has an open session (lookup spans sources). DiscordVoiceListener now calls it through command records and excludes bots in voice/video/stream callbacks. Linking/merge validation, historical overlap protection, and concurrent cross-source enforcement remain unimplemented; the SQL unique index still covers only DISCORD. Optional historical non-overlap SQL remains a proposal; no hardening script is present.
 
 The session interval measures total study time even with camera and screen sharing both off. Microphone mute/deafen does not stop it. Moving from tracked room A to B closes A and starts B at the same observed instant in one transaction.
 
@@ -117,9 +121,9 @@ The session interval measures total study time even with camera and screen shari
 | `camera_on` | `BOOLEAN` | Camera state during the interval. |
 | `screen_share_on` | `BOOLEAN` | Screen sharing state during the interval. |
 
-Persist both-off intervals as well. When either state changes, close the current segment and open the next at the same instant. Unchanged state needs no new segment. If several changes share the current segment's start instant, update that boundary state instead of creating duplicate or zero-length segments.
+Persist segments only when at least one visual state is active (`camera_on OR screen_share_on = true`). Voice-only intervals (both camera and sharing off) do not create segment rows; total study time is measured directly by `study_sessions`. When either visual state changes, close the current segment and open the next at the same instant if media remains active, or close without reopening if both are turned off. Unchanged state needs no new segment. If several changes share the current segment's start instant, update that boundary state instead of creating duplicate or zero-length segments.
 
-Database rules: unique `(study_session_id, started_at)`, at most one open segment per session, and end cannot precede start. Service rules: segments belong inside their parent interval, are consecutive with no gaps or overlaps, and exactly cover the observed session. Closing a session closes its segment in the same transaction. Optional range constraints enforce non-overlap but cannot prove full coverage or parent containment.
+Draft SQL defines unique `(study_session_id, started_at)` and at most one open segment per session. StudySessionService creates segments when camera or screen sharing is active, splits changed states at a shared boundary, and closes an open segment with its parent in one transaction. Equal start boundaries update flags in place; event times use microsecond precision. Visual interval tracking is checked by PostgreSQL integration tests. Replay/recovery and concurrent mutation handling remain deferred, as do segment-time CHECKs and optional range constraints.
 
 This retains enough history for total, visual, camera-only, and share-only metrics without changing old session records.
 
@@ -127,8 +131,8 @@ This retains enough history for total, visual, camera-only, and share-only metri
 
 For a report window `[from, to)`, clip each interval to that window. Sum exact durations first, then floor the final sum to whole seconds.
 
-- Total: sum clipped session intervals.
-- Visual: sum clipped segments where `camera_on OR screen_share_on`.
+- Total: sum clipped session intervals (`study_sessions`).
+- Visual: sum clipped segments where `camera_on OR screen_share_on` (`study_session_segments`).
 - Camera: sum clipped segments where `camera_on`.
 - Screen sharing: sum clipped segments where `screen_share_on`.
 
@@ -138,12 +142,10 @@ Example, one session from 09:00 to 10:00 Vietnam time:
 
 | Segment | Camera | Sharing | Total minutes | Visual minutes |
 |---|---|---|---:|---:|
-| 09:00–09:10 | Off | Off | 10 | 0 |
-| 09:10–09:30 | On | Off | 20 | 20 |
-| 09:30–09:40 | On | On | 10 | 10 |
-| 09:40–09:50 | Off | On | 10 | 10 |
-| 09:50–10:00 | Off | Off | 10 | 0 |
-| **Sum** | | | **60** | **40** |
+| 09:10–09:30 | On | Off | — | 20 |
+| 09:30–09:40 | On | On | — | 10 |
+| 09:40–09:50 | Off | On | — | 10 |
+| **Sum** | | | **60 (session)** | **40 (segments)** |
 
 Camera is 30 minutes and sharing is 20 minutes; their common 10 minutes counts once in visual time. A 23:50–00:20 session contributes 10 minutes to the first date and 20 to the next. Two 0.6-second intervals contribute one whole second after summing, not zero.
 
@@ -213,13 +215,44 @@ The SQL examples use closed, non-review sessions, active users with positive tim
 
 ## 10. Files and Validation
 
-- `schema.sql`: five core tables, keys, checks, and initial indexes.
-- `auth-proposal.sql`: two optional authentication lifecycle tables.
-- `hardening.sql`: optional PostgreSQL range exclusion constraints using `btree_gist`.
-- `example-queries.sql`: parameterized statistics and leaderboard examples.
-- `ERD.png` / `ERD.svg`: rendered core relationships; the image works without Mermaid support.
+- [sql/create-database.sql](./sql/create-database.sql): create study_community, run separately against postgres with autocommit; skip if the database already exists.
+- [sql/schema.sql](./sql/schema.sql): main five-table SQL draft, including types/defaults, PKs, required columns, FKs, uniqueness, and indexes, without CHECK clauses. It has explicit transaction boundaries and may be run manually only on fresh disposable storage. It is not finalized or versioned; there is no active migration resource.
+- UUID defaults use gen_random_uuid(); timestamps use TIMESTAMPTZ. updated_at still needs application updates. Java provider/source enums still permit only DISCORD; no explicit status/source/provider CHECK clauses remain in setup SQL. New providers/sources still require feature work.
+- `auth-proposal.sql`, `hardening.sql`, and `example-queries.sql` are referenced proposals, not files currently present in this workspace.
+- `ERD.png` / `ERD.svg` are absent; use the Mermaid relationships above.
 
-The time examples and SQL constraints were reviewed. PostgreSQL execution and Java SDK integration have not been verified in this environment. Run migrations and integration tests against a disposable PostgreSQL database before using them in an application.
+Current configuration sets Flyway enabled:false, Hibernate ddl-auto:none, and SQL init mode:never. The application does not automatically apply or validate draft schema at startup. Entities retain mapping names, relationships, enums, runtime ID/audit values, and ORM write behavior, without duplicating SQL schema definitions. This preserves SQL ownership while waiting for the main SQL to be finalized.
+
+EntityMappingTest only bootstraps ORM metadata without JDBC or DDL. SqlSchemaTest applies docs/sql/schema.sql explicitly to fresh isolated PostgreSQL, then validates ORM mappings and exercises SQL constraints/round trips without Spring/Discord. UserIdentityServiceIntegrationTest applies the same draft in its own temporary schema and starts only the focused Spring persistence context, not the application or Discord. Both integration classes are skipped without TEST_DB_URL. Explicit test validation is separate from application Hibernate none; all three classes passed on isolated PostgreSQL 18.6 on 2026-10-31 (6 tests, no skips).
+
+### Current draft phase and later migration checkpoint
+
+1. Continue refining the main SQL draft. Do not infer completion from the current five tables, entity mappings, or passing checks.
+2. Keep automatic application migration, schema generation, and schema validation off. Manual draft execution is only for a fresh database whose purpose/data are understood; this task did not change the user's database.
+3. When the user explicitly finalizes the main SQL, create V1, enable Flyway, and set application Hibernate to validate. This is Planned, not activated now.
+4. After that checkpoint, leave applied/shared migrations unchanged and add V2/V3 changes. A pre-existing database needs explicit schema/data adoption and migration-history reconciliation; never auto-baseline or recreate it.
+
+### Optional isolated draft-SQL verification
+
+Use fresh disposable PostgreSQL, never the application datasource or retained data. Set TEST_DB_URL, TEST_DB_USERNAME, and TEST_DB_PASSWORD to that isolated database, then run:
+
+```powershell
+mvn -B "-Dtest=EntityMappingTest,SqlSchemaTest" package
+```
+
+Historical checks: at the draft-phase clarification, clean packaging passed with EntityMappingTest successful and SqlSchemaTest skipped without TEST_DB_URL; earlier V1 activation had been withdrawn. A later six-test run on temporary PostgreSQL 18.6 covered draft SQL and the earlier concurrent-creation recovery. That recovery/test is now superseded by the demo-first decision. Current verification: mvn -B "-Dtest=UserIdentityServiceIntegrationTest,EntityMappingTest" package passed on 2026-10-31 (4 tests, no skips/JAR), checking normal creation/reuse/rollback and offline metadata; the temporary PostgreSQL cluster was stopped. These checks do not finalize the SQL or enable application migrations; full application/default database/Discord startup remains unverified. Future draft-SQL tests still require fresh disposable storage.
+
+### Identity constraint revision — 2026-10-31
+
+At the user's direction, replaced the original composite session-identity ownership FK with a simple identity FK, removed its supporting unique `(user_id, id)` and the explicit Discord-only provider check, and aligned the identity lookup index to `identity_id`. Keep unique `(provider, provider_subject)` to prevent duplicate external accounts. Ownership remains required business behavior for future services, but the database no longer enforces the user/identity pairing. This supersedes the ownership-DDL claim recorded for the original 2026-10-24 mapping. It does not implement account merging or multi-provider login.
+
+Entity annotations and fresh-setup SQL do not remove constraints from an already created database. Existing schema changes require an explicit update under ADR-003; no live schema update has been executed or verified for this revision.
+
+### Subsequent handwritten CHECK deferral — 2026-10-31
+
+At the user's request, removed the remaining seven handwritten checks: user status, study source, required Discord references, session time bounds, checkpoint bounds, session end-reason consistency, and segment time bounds. Keep their intended rules above for future feature implementation; validation is not implemented merely because the rules are documented. No replacement validators, triggers, or service layers were introduced. PKs, required columns, FKs, unique constraints, defaults, and indexes are retained. This supersedes earlier time/state-check enforcement descriptions.
+
+SQL ownership avoids Hibernate-generated enum checks: `@Enumerated(EnumType.STRING)` remains for ORM encoding, while application Hibernate none creates no DDL. Draft SQL contains no CHECK clauses. No custom enum converters are needed and no existing database constraints were dropped; later Hibernate validate will also be read-only.
 
 ## 11. API Draft Planning Addendum — 2026-10-22
 
@@ -238,7 +271,7 @@ The user requested a revisable API template. The following choices are draft imp
 - Web study proposes `source = WEB`, with null Discord identity/room. The provider/source match rule in section 4.4 applies to Discord identity resolution; a WEB session is not assigned the provider that authenticated its owner.
 - Add an optional `client_session_id UUID` to study sessions for persistent browser-attempt binding. WEB requires it; DISCORD leaves it null. Proposed unique `(user_id, client_session_id)` for WEB makes retries resolve the same attempt, including after closure. This column is not part of the five-table baseline yet.
 - Before enabling WEB, replace Discord-only active uniqueness with one open credited session per internal user across WEB/DISCORD. Apply the same user-level serialization to both sources and prevent overlapping completed credited intervals. A separate index per source is insufficient.
-- Existing credited source keeps priority. After WEB stops/expires, start Discord only from newly confirmed enabled-room presence, with no backfill.
+- Confirmed 2026-10-31 (Planned): the existing credited source keeps priority; block a second session using the same internal user_id even when it comes from a different linked identity, browser/device, or source. Current SQL only has Discord-specific active uniqueness, so it does not implement cross-source exclusivity. Draft handoff: after WEB stops/expires, start Discord only from newly confirmed enabled-room presence, with no backfill.
 - Draft heartbeat interval is 30 seconds, expiry 120 seconds; expiration closes at `last_observed_at`. Proposed additional end reasons are `USER_STOPPED` and `HEARTBEAT_TIMEOUT`. Browser presence is not proof of attention.
 - Initial WEB segments have camera/share both false; web visual credit needs a later observation design.
 
