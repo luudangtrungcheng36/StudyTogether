@@ -1,6 +1,6 @@
-package com.studycommunity.feature.discord.config;
+package com.studycommunity.discord.config;
 
-import com.studycommunity.feature.discord.listener.DiscordVoiceListener;
+import com.studycommunity.discord.listener.DiscordVoiceListener;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.requests.GatewayIntent;
