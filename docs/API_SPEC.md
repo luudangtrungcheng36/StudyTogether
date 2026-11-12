@@ -5,12 +5,12 @@
 
 ## 1. Scope and working defaults
 
-The workbook [Study-Together-Theo-Doi-Du-An.xlsx](./Study-Together-Theo-Doi-Du-An.xlsx) defines the original Discord scope. Follow-up discussion adds draft Google/local login, verified account linking, and web study. All learning history belongs to an internal user, independently of login provider.
+The workbook [Study-Together-Theo-Doi-Du-An.xlsx](./Study-Together-Theo-Doi-Du-An.xlsx) defines the original Discord scope. On 2026-10-30 the user confirmed multiple website login methods, timed web study without requiring Discord, and linking Discord to an account created through another method as Planned product requirements. All study history belongs to the same internal user, independently of login provider. Google/local login are existing candidate drafts; provider selection, endpoint details, conflict handling, and source-coordination defaults remain provisional. None of these capabilities is implemented yet.
 
 | Stage | Features | References |
 |---|---|---|
 | Core | Discord login, identity resolution, profile, lifetime dashboard, history, tracked rooms, Discord events, leaderboard | AUTH-01/02, IDENTITY-01, PROFILE-01, ROOM-01/02, STUDY-01 through STUDY-06, RANK-01 |
-| Extension draft | Google login, local email/password, linking, web study | IDEA-01 through IDEA-04 and subsequent discussion |
+| Planned capabilities; detailed contracts draft | Multiple login methods (Google/local are candidates), linking Discord to an existing account, web study | IDEA-01 through IDEA-04 and confirmation on 2026-10-30 |
 
 Company management, generic User/Role/Permission CRUD, uploads, achievements, chat, and games are outside this contract. Administrative actions still require authorization. Existing template endpoints do not establish implementation of these target APIs.
 
@@ -167,6 +167,8 @@ Draft routes use Spring Security OAuth login conventions outside `/api/v1`:
 
 Use backend-managed state; validate the provider response and resolve `(provider, provider_subject)`. Google identity uses verified `sub`; Discord uses its verified user ID. Never merge by email/name. Reuse bot-created Discord users; create user/identity atomically with concurrent-creation handling.
 
+Confirmed flow, 2026-10-30 (Planned): a person already studying through Discord logs into the website with the same Discord account and receives the existing internal user and Discord history. No separate Discord-link operation is needed; that user can also start WEB study. A user signed in through another method who has not linked Discord uses section 6's explicit linking flow to add Discord to the current user. Switching study sources does not require relinking. This clarification does not settle conflicts between two already distinct internal accounts or authorize automatic merging.
+
 Success creates a login lifecycle, sets the refresh cookie, and redirects to an allowlisted frontend completion page. The frontend obtains CSRF context, then calls `/auth/refresh` for its access JWT. Never put access/refresh tokens in redirect URLs. Cancellation/invalid callbacks redirect to a fixed error page without creating a login. Temporary OAuth state is separate from study sessions.
 
 ### Browser authentication defaults — provisional
@@ -205,7 +207,7 @@ Both require browser CSRF context and rate limits. Draft validation: display nam
 
 Credentials migration, normalization, email verification/recovery, and abuse controls require feature design before enabling local accounts. Matching a provider email does not automatically link accounts.
 
-## 6. Linked identities — extension draft
+## 6. Linked identities — Planned capability, draft contract
 
 ### GET /me/identities
 
@@ -228,7 +230,7 @@ Linking must be explicitly distinguished from login; normal OAuth login cannot i
 
 If the bot already created another user with Discord history, preserve both accounts/history and report conflict. A verified merge workflow must reconcile overlapping history and active sessions; moving identity ownership alone is insufficient. No merge API is specified yet.
 
-## 7. Web study — extension draft
+## 7. Web study — Planned capability, draft contract
 
 All operations require login/active account and affect WEB sessions only. `clientSessionId` is a UUID generated for one browser study attempt. It identifies an attempt, not authentication; persist its binding to the session and authenticated user. Server observations determine time. Clients never submit credited seconds or timestamps.
 
@@ -248,6 +250,10 @@ Responses use section 4's session representation.
 - Heartbeat proves application presence, not attention or camera use. Evaluate browser presence/visual trust before adding rewards or stronger claims.
 
 ### Coordination with Discord
+
+Confirmed 2026-10-31 (Planned, not implemented): an internal user may have only one active study session, regardless of login identity, device, browser attempt, or study source. Keep the existing session and reject a second start; compare internal user IDs, not provider/subject pairs. This also applies to two identities linked to the same user.
+
+Draft notice copy: "Bạn đang học trên {nguồn hiện tại}. Hãy kết thúc phiên đó trước khi bắt đầu tại đây." A rejected website start should show the current source. Discord entry while WEB is active must not create another credited session; blocking refers to study tracking, not preventing login or joining a voice channel. Direct Discord notification delivery remains TBD; no DM/channel posting or forced disconnect is implemented or authorized by this requirement.
 
 Serialize start/end, expiry, Discord events, and reconciliation on the same internal user. Enforce one open credited session across WEB/DISCORD in database and services. Completed credited intervals must not overlap across sources. This strengthens the Discord-only baseline; migrations are required before web study.
 
@@ -309,7 +315,7 @@ Exclude bot accounts/untracked rooms. Camera not required for total time; mute/d
 - Keep contracts marked draft until controllers, security paths, DTOs, migrations, services, and meaningful tests exist. Route grouping does not mandate one module per route.
 - Apply the planning addendum in DATABASE.md before implementing extension features; no credentials, web-attempt binding, login lifecycle, or cross-source constraint is implied to exist today.
 - [ADR-001](./decisions/001-refresh-token-strategy.md) now records the proposed browser-only rotating-cookie lifecycle, including replay, concurrency, CSRF, and logout behavior. Review it alongside this contract during implementation. [ADR-002](./decisions/002-file-upload-strategy.md) does not add uploads to this scope.
-- Revisit defaults during feature work: ongoing totals, source priority, account merge/unlink, local-account verification/recovery, presence trust, room recovery, guest access, ranking style, and report limits.
+- Revisit defaults during feature work: ongoing totals, account merge/unlink, local-account verification/recovery, presence trust, room recovery, guest access, ranking style, and report limits. Existing-session priority is Planned under section 7; notification delivery and source handoff details remain draft.
 - Validate source concurrency, duplicate/reordered events, link conflicts, session ownership, refresh/logout, and reporting boundaries against the intended database. Documentation changes do not establish test results.
 
 Technical references: [Spring Security OAuth login routes](https://docs.spring.io/spring-security/reference/servlet/oauth2/login/advanced.html), [Google OpenID Connect identity](https://developers.google.com/identity/openid-connect/openid-connect), and [PostgreSQL partial indexes](https://www.postgresql.org/docs/current/indexes-partial.html).
