@@ -19,7 +19,7 @@ Describe how the module currently works and why, while preserving a dated histor
 
 ## Location and Template
 
-Use `src/main/java/<base-package>/feature/<module>/CONTEXT.md` for an existing module. Do not create empty modules solely to hold this file.
+Use `docs/contexts/<domain>/CONTEXT.md` for an existing business area (currently user and study). Code is grouped by layer, so read the relevant entity, repository, service, and integration files together. Do not create empty Java packages solely to hold context files.
 
 ```markdown
 # {Module} — Context
